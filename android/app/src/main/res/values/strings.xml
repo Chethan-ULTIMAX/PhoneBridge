@@ -1,1 +1,4 @@
-<resources><string name="app_name">PhoneBridge</string></resources>
+<resources>
+    <string name="app_name">PhoneBridge</string>
+    <string name="accessibility_description">PhoneBridge uses Android accessibility only after you explicitly enable the service, allowing the paired desktop to send visible touch and navigation actions to this phone.</string>
+</resources>
