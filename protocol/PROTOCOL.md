@@ -53,3 +53,7 @@ All storage paths are interpreted relative to the Android storage tree selected 
 ## Compatibility
 
 The protocol is versioned so future desktop clients can negotiate capabilities instead of assuming that every phone supports every operation.
+
+### Active local discovery
+
+The desktop client listens on UDP `38741` and periodically sends `PHONEBRIDGE/1 PROBE` to the local IPv4 `/24` addresses. Android PhoneBridge responds directly with the normal `PHONEBRIDGE/1 DISCOVER` message containing its device ID, model, and TCP server port. This supplements broadcast discovery and supports networks where broadcast announcements do not reach the desktop, including common phone-hotspot layouts.

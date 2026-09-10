@@ -39,6 +39,8 @@ public class MainActivity extends AppCompatActivity {
     Runnable announce;
     String pairingCode;
     volatile Client screenClient;
+    DatagramSocket discoverySocket;
+    Thread discoveryThread;
     Client pendingScreenClient;
     MediaProjection mediaProjection;
     VirtualDisplay virtualDisplay;
@@ -97,6 +99,7 @@ public class MainActivity extends AppCompatActivity {
 
     void startServices() {
         server=new Server(); server.start();
+        startDiscoveryResponder();
         announce=()->{ announce(); handler.postDelayed(announce,2000); };
         handler.post(announce);
     }
@@ -111,9 +114,38 @@ public class MainActivity extends AppCompatActivity {
         } catch(Exception ignored) {} }).start();
     }
 
+
+    // PHONEBRIDGE ACTIVE DISCOVERY
+    void startDiscoveryResponder() {
+        discoveryThread = new Thread(() -> {
+            try {
+                DatagramSocket s = new DatagramSocket(DISCOVERY_PORT);
+                s.setReuseAddress(true);
+                s.setBroadcast(true);
+                discoverySocket = s;
+                byte[] buf = new byte[1024];
+                while (!Thread.currentThread().isInterrupted()) {
+                    DatagramPacket p = new DatagramPacket(buf, buf.length);
+                    s.receive(p);
+                    String msg = new String(p.getData(), p.getOffset(), p.getLength(), StandardCharsets.UTF_8).trim();
+                    if ("PHONEBRIDGE/1 PROBE".equals(msg)) {
+                        String name = Build.MODEL.replace(" ", "_");
+                        String response = "PHONEBRIDGE/1 DISCOVER " + deviceId() + " " + name + " " + server.port;
+                        byte[] out = response.getBytes(StandardCharsets.UTF_8);
+                        DatagramPacket reply = new DatagramPacket(out, out.length, p.getAddress(), p.getPort());
+                        s.send(reply);
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }, "PhoneBridge-Discovery");
+        discoveryThread.setDaemon(true);
+        discoveryThread.start();
+    }
+
     String deviceId() { return Settings.Secure.getString(getContentResolver(),Settings.Secure.ANDROID_ID); }
 
-    @Override protected void onDestroy() { handler.removeCallbacks(announce); stopScreen(); if(server!=null)server.shutdown(); super.onDestroy(); }
+    @Override protected void onDestroy() { handler.removeCallbacks(announce); if(discoveryThread!=null)discoveryThread.interrupt(); if(discoverySocket!=null)discoverySocket.close(); stopScreen(); if(server!=null)server.shutdown(); super.onDestroy(); }
 
     void requestScreen(Client c) {
         if(mediaProjection!=null) { startScreen(c); return; }

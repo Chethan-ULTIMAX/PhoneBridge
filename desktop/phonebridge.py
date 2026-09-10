@@ -204,7 +204,33 @@ class App:
         self.terminal_output.pack(fill="both", expand=True)
 
     def discover(self):
-        def worker():
+        # PHONEBRIDGE_ACTIVE_PROBING
+        def local_ipv4s():
+            found = set()
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("192.0.2.1", 1))
+                found.add(s.getsockname()[0])
+                s.close()
+            except OSError:
+                pass
+            try:
+                for item in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                    found.add(item[4][0])
+            except OSError:
+                pass
+            return sorted(x for x in found if x and not x.startswith("127."))
+
+        def register(data, addr):
+            try:
+                p = data.decode(errors="replace").split()
+                if len(p) >= 5 and p[:2] == ["PHONEBRIDGE/1", "DISCOVER"]:
+                    self.devices[p[2]] = (p[3].replace("_", " "), addr[0], int(p[4]))
+                    self.root.after(0, self.refresh_devices)
+            except (ValueError, OSError):
+                pass
+
+        def listener():
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
@@ -213,17 +239,32 @@ class App:
                 while True:
                     try:
                         data, addr = s.recvfrom(2048)
-                        p = data.decode(errors="replace").split(" ")
-                        if len(p) >= 5 and p[:2] == ["PHONEBRIDGE/1", "DISCOVER"]:
-                            self.devices[p[2]] = (p[3].replace("_", " "), addr[0], int(p[4]))
-                            self.root.after(0, self.refresh_devices)
+                        register(data, addr)
                     except socket.timeout:
-                        pass
+                        continue
                     except OSError:
                         return
             finally:
                 s.close()
-        threading.Thread(target=worker, daemon=True).start()
+
+        def probe_loop():
+            while True:
+                try:
+                    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    for ip in local_ipv4s():
+                        prefix = ".".join(ip.split(".")[:3])
+                        for last in range(1, 255):
+                            try:
+                                sender.sendto(b"PHONEBRIDGE/1 PROBE", (f"{prefix}.{last}", DISCOVERY_PORT))
+                            except OSError:
+                                pass
+                    sender.close()
+                except OSError:
+                    pass
+                threading.Event().wait(5)
+
+        threading.Thread(target=listener, daemon=True).start()
+        threading.Thread(target=probe_loop, daemon=True).start()
 
     def refresh_devices(self):
         self.device_list.delete(0, "end")
@@ -233,7 +274,7 @@ class App:
 
     def connect(self):
         if not self.devices:
-            return messagebox.showinfo("PhoneBridge", "No phone discovered. Use the same Wi-Fi.")
+            return messagebox.showinfo("PhoneBridge", "No phone discovered. Keep PhoneBridge open on the phone and make sure the devices share a local network or hotspot.")
         i = (self.device_list.curselection() or (0,))[0]
         name, host, port = list(self.devices.values())[i]
         code = simpledialog.askstring("Pair Phone", f"Enter the 6-digit code shown on {name}:")
