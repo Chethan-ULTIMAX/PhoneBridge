@@ -1,286 +1,150 @@
-import json
-import os
-import socket
-import struct
-import threading
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+import json, os, socket, struct, threading, tkinter as tk
+from tkinter import filedialog, messagebox, ttk, simpledialog
 
 DISCOVERY_PORT = 38741
-MAGIC = b"PHONEBRIDGE/1"
-
 
 def send_frame(sock, obj):
-    raw = json.dumps(obj, separators=(",", ":")).encode("utf-8")
+    raw = json.dumps(obj, separators=(",", ":")).encode()
     sock.sendall(struct.pack(">I", len(raw)) + raw)
 
-
-def recv_frame(sock):
-    header = _recv_exact(sock, 4)
-    if not header:
-        return None
-    size = struct.unpack(">I", header)[0]
-    if size > 4 * 1024 * 1024:
-        raise ValueError("Frame is too large")
-    return json.loads(_recv_exact(sock, size).decode("utf-8"))
-
-
-def _recv_exact(sock, size):
+def recv_exact(sock, n):
     data = bytearray()
-    while len(data) < size:
-        part = sock.recv(size - len(data))
-        if not part:
-            raise ConnectionError("Phone disconnected")
+    while len(data) < n:
+        part = sock.recv(n-len(data))
+        if not part: raise ConnectionError("Phone disconnected")
         data.extend(part)
     return bytes(data)
 
+def recv_frame(sock):
+    size = struct.unpack(">I", recv_exact(sock, 4))[0]
+    if size > 4*1024*1024: raise ValueError("Frame too large")
+    return json.loads(recv_exact(sock, size).decode())
 
 class PhoneConnection:
     def __init__(self, host, port):
-        self.host = host
-        self.port = port
-        self.sock = None
+        self.host, self.port, self.sock = host, port, None
         self.lock = threading.Lock()
-
-    def connect(self, code=None):
-        self.sock = socket.create_connection((self.host, self.port), timeout=8)
-        self.sock.settimeout(15)
-        send_frame(self.sock, {"op": "hello", "client": "PhoneBridge Desktop", "version": 1})
-        reply = recv_frame(self.sock)
-        if reply.get("pairing_required"):
-            if not code:
-                self.close()
-                raise PermissionError("Pairing code required")
-            send_frame(self.sock, {"op": "pair", "code": code})
-            reply = recv_frame(self.sock)
-        if not reply.get("ok"):
-            self.close()
-            raise PermissionError(reply.get("error", "Connection rejected"))
-        return reply
-
+    def connect(self, code):
+        self.sock = socket.create_connection((self.host,self.port), timeout=8)
+        self.sock.settimeout(30)
+        send_frame(self.sock, {"op":"hello","client":"PhoneBridge Desktop","version":1})
+        hello = recv_frame(self.sock)
+        if hello.get("pairing_required"):
+            send_frame(self.sock, {"op":"pair","code":code})
+            hello = recv_frame(self.sock)
+        if not hello.get("ok"):
+            self.close(); raise PermissionError(hello.get("error","Connection rejected"))
+        return hello
     def request(self, op, **kwargs):
         with self.lock:
-            send_frame(self.sock, {"op": op, **kwargs})
-            return recv_frame(self.sock)
-
-    def download(self, remote_path, local_path):
+            send_frame(self.sock, {"op":op, **kwargs}); return recv_frame(self.sock)
+    def download(self, remote, local):
         with self.lock:
-            send_frame(self.sock, {"op": "file.download", "path": remote_path})
-            meta = recv_frame(self.sock)
-            if not meta.get("ok"):
-                raise RuntimeError(meta.get("error", "Download failed"))
-            remaining = int(meta["size"])
-            with open(local_path, "wb") as out:
-                while remaining:
-                    chunk = self.sock.recv(min(1024 * 1024, remaining))
-                    if not chunk:
-                        raise ConnectionError("Phone disconnected during download")
-                    out.write(chunk)
-                    remaining -= len(chunk)
-
-    def upload(self, local_path, remote_path):
-        size = os.path.getsize(local_path)
+            send_frame(self.sock,{"op":"file.download","path":remote})
+            meta=recv_frame(self.sock)
+            if not meta.get("ok"): raise RuntimeError(meta.get("error","Download failed"))
+            left=int(meta["size"])
+            with open(local,"wb") as f:
+                while left:
+                    b=self.sock.recv(min(1024*1024,left))
+                    if not b: raise ConnectionError("Disconnected during download")
+                    f.write(b); left-=len(b)
+    def upload(self, local, remote):
+        size=os.path.getsize(local)
         with self.lock:
-            send_frame(self.sock, {"op": "file.upload", "path": remote_path, "size": size})
-            reply = recv_frame(self.sock)
-            if not reply.get("ready"):
-                raise RuntimeError(reply.get("error", "Upload rejected"))
-            with open(local_path, "rb") as source:
+            send_frame(self.sock,{"op":"file.upload","path":remote,"size":size})
+            ready=recv_frame(self.sock)
+            if not ready.get("ready"): raise RuntimeError(ready.get("error","Upload rejected"))
+            with open(local,"rb") as f:
                 while True:
-                    chunk = source.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    self.sock.sendall(chunk)
-            result = recv_frame(self.sock)
-            if not result.get("ok"):
-                raise RuntimeError(result.get("error", "Upload failed"))
-
+                    b=f.read(1024*1024)
+                    if not b: break
+                    self.sock.sendall(b)
+            result=recv_frame(self.sock)
+            if not result.get("ok"): raise RuntimeError(result.get("error","Upload failed"))
     def close(self):
         if self.sock:
-            try:
-                self.sock.close()
-            finally:
-                self.sock = None
+            try:self.sock.close()
+            finally:self.sock=None
 
-
-class PhoneBridgeApp:
+class App:
     def __init__(self, root):
-        self.root = root
-        self.root.title("PhoneBridge")
-        self.root.geometry("900x620")
-        self.root.minsize(760, 520)
-        self.connection = None
-        self.current_path = ""
-        self.discovery = {}
-        self._build_ui()
-        self.root.after(400, self.start_discovery)
-
-    def _build_ui(self):
-        style = ttk.Style()
-        try:
-            style.theme_use("vista")
-        except tk.TclError:
-            pass
-
-        header = ttk.Frame(self.root, padding=(18, 14))
-        header.pack(fill="x")
-        ttk.Label(header, text="PhoneBridge", font=("Segoe UI", 20, "bold")).pack(side="left")
-        self.status = ttk.Label(header, text="● Searching for phones…")
-        self.status.pack(side="right", pady=7)
-
-        body = ttk.Frame(self.root, padding=18)
-        body.pack(fill="both", expand=True)
-
-        self.devices = tk.Listbox(body, height=5, activestyle="none")
-        self.devices.pack(fill="x", pady=(0, 12))
-        ttk.Button(body, text="Connect selected phone", command=self.connect_selected).pack(anchor="w", pady=(0, 15))
-
-        toolbar = ttk.Frame(body)
-        toolbar.pack(fill="x")
-        self.path_label = ttk.Label(toolbar, text="Internal Storage", font=("Segoe UI", 11, "bold"))
-        self.path_label.pack(side="left")
-        ttk.Button(toolbar, text="Up", command=self.go_up).pack(side="right")
-        ttk.Button(toolbar, text="Refresh", command=self.refresh).pack(side="right", padx=6)
-        ttk.Button(toolbar, text="Upload", command=self.upload).pack(side="right")
-        ttk.Button(toolbar, text="Download", command=self.download).pack(side="right", padx=6)
-
-        columns = ("name", "type", "size")
-        self.tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse")
-        self.tree.heading("name", text="Name")
-        self.tree.heading("type", text="Type")
-        self.tree.heading("size", text="Size")
-        self.tree.column("name", width=520)
-        self.tree.column("type", width=110)
-        self.tree.column("size", width=120)
-        self.tree.pack(fill="both", expand=True, pady=(10, 0))
-        self.tree.bind("<Double-1>", self.open_item)
-
-        self.info = ttk.Label(body, text="Connect a phone to browse its shared storage.")
-        self.info.pack(fill="x", pady=(10, 0))
-
-    def start_discovery(self):
+        self.root=root; root.title("PhoneBridge"); root.geometry("920x640"); root.minsize(760,520)
+        self.connection=None; self.path=""; self.devices={}; self.ui(); self.discover()
+    def ui(self):
+        top=ttk.Frame(self.root,padding=18); top.pack(fill="x")
+        ttk.Label(top,text="PhoneBridge",font=("Segoe UI",21,"bold")).pack(side="left")
+        self.status=ttk.Label(top,text="● Searching for phones…"); self.status.pack(side="right")
+        body=ttk.Frame(self.root,padding=18); body.pack(fill="both",expand=True)
+        self.list= tk.Listbox(body,height=4,activestyle="none"); self.list.pack(fill="x",pady=(0,10))
+        ttk.Button(body,text="Connect selected phone",command=self.connect).pack(anchor="w",pady=(0,14))
+        bar=ttk.Frame(body); bar.pack(fill="x")
+        self.path_label=ttk.Label(bar,text="Internal Storage",font=("Segoe UI",11,"bold")); self.path_label.pack(side="left")
+        for text,cmd in (("Up",self.up),("Refresh",self.refresh),("Upload",self.upload),("Download",self.download)):
+            ttk.Button(bar,text=text,command=cmd).pack(side="right",padx=(6,0))
+        self.tree=ttk.Treeview(body,columns=("name","type","size"),show="headings")
+        for c,t,w in (("name","Name",540),("type","Type",110),("size","Size",120)):
+            self.tree.heading(c,text=t); self.tree.column(c,width=w)
+        self.tree.pack(fill="both",expand=True,pady=10); self.tree.bind("<Double-1>",self.open)
+        self.info=ttk.Label(body,text="Open PhoneBridge on Android to begin."); self.info.pack(fill="x")
+    def discover(self):
         def worker():
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind(("", DISCOVERY_PORT))
-            sock.settimeout(1)
+            s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(("",DISCOVERY_PORT)); s.settimeout(1)
             while True:
                 try:
-                    data, addr = sock.recvfrom(2048)
-                    text = data.decode("utf-8", "replace")
-                    if text.startswith("PHONEBRIDGE/1 DISCOVER "):
-                        parts = text.split(" ")
-                        if len(parts) >= 5:
-                            device_id, name, port = parts[2], parts[3], int(parts[4])
-                            self.discovery[device_id] = (name, addr[0], port)
-                            self.root.after(0, self.refresh_devices)
-                except socket.timeout:
-                    continue
-                except OSError:
-                    break
-        threading.Thread(target=worker, daemon=True).start()
-
+                    data,addr=s.recvfrom(2048); p=data.decode(errors="replace").split(" ")
+                    if len(p)>=5 and p[:2]==["PHONEBRIDGE/1","DISCOVER"]:
+                        self.devices[p[2]]=(p[3],addr[0],int(p[4])); self.root.after(0,self.refresh_devices)
+                except socket.timeout: pass
+                except OSError: return
+        threading.Thread(target=worker,daemon=True).start()
     def refresh_devices(self):
-        self.devices.delete(0, "end")
-        for device_id, (name, host, port) in self.discovery.items():
-            self.devices.insert("end", f"📱 {name}  —  {host}:{port}")
-        self.status.config(text=f"● {len(self.discovery)} phone(s) discovered")
-
-    def connect_selected(self):
-        if not self.discovery:
-            messagebox.showinfo("PhoneBridge", "No phone discovered. Put the phone and PC on the same Wi-Fi and open the PhoneBridge app.")
-            return
-        index = self.devices.curselection()
-        if not index:
-            index = (0,)
-        item = list(self.discovery.values())[index[0]]
-        name, host, port = item
-        code = tk.simpledialog.askstring("Pair Phone", f"Enter the 6-digit code shown on {name}:")
-        if not code:
-            return
+        self.list.delete(0,"end")
+        for name,host,port in self.devices.values(): self.list.insert("end",f"📱 {name} — {host}:{port}")
+        self.status.config(text=f"● {len(self.devices)} phone(s) discovered")
+    def connect(self):
+        if not self.devices: return messagebox.showinfo("PhoneBridge","No phone discovered. Use the same Wi-Fi.")
+        i=(self.list.curselection() or (0,))[0]; name,host,port=list(self.devices.values())[i]
+        code=simpledialog.askstring("Pair Phone",f"Enter the 6-digit code shown on {name}:")
+        if not code:return
         try:
-            self.connection = PhoneConnection(host, port)
-            reply = self.connection.connect(code)
-            self.status.config(text=f"● Connected to {reply.get('device_name', name)}")
-            self.current_path = ""
-            self.refresh()
-        except Exception as exc:
-            self.connection = None
-            messagebox.showerror("Connection failed", str(exc))
-
+            self.connection=PhoneConnection(host,port); r=self.connection.connect(code.strip()); self.status.config(text=f"● Connected to {r.get('device_name',name)}"); self.path=""; self.refresh()
+        except Exception as e: self.connection=None; messagebox.showerror("Connection failed",str(e))
     def refresh(self):
-        if not self.connection:
-            return
+        if not self.connection:return
         try:
-            reply = self.connection.request("storage.list", "path" if False else path=self.current_path)
-            if not reply.get("ok"):
-                raise RuntimeError(reply.get("error", "Unable to list storage"))
+            r=self.connection.request("storage.list",path=self.path)
+            if not r.get("ok"):raise RuntimeError(r.get("error","Unable to list storage"))
             self.tree.delete(*self.tree.get_children())
-            for entry in reply.get("entries", []):
-                self.tree.insert("", "end", values=(entry["name"], "Folder" if entry["directory"] else "File", self.human_size(entry.get("size", 0))))
-            self.path_label.config(text="Internal Storage" + ("/" + self.current_path if self.current_path else ""))
-            self.info.config(text=f"{len(reply.get('entries', []))} items")
-        except Exception as exc:
-            messagebox.showerror("PhoneBridge", str(exc))
-
+            for x in r.get("entries",[]):self.tree.insert("","end",values=(x["name"],"Folder" if x["directory"] else "File",self.size(x.get("size",0))))
+            self.path_label.config(text="Internal Storage"+("/"+self.path if self.path else "")); self.info.config(text=f"{len(r.get('entries',[]))} items")
+        except Exception as e:messagebox.showerror("PhoneBridge",str(e))
     def selected(self):
-        item = self.tree.selection()
-        if not item:
-            return None
-        return self.tree.item(item[0], "values")
-
-    def open_item(self, _event=None):
-        entry = self.selected()
-        if not entry or entry[1] != "Folder":
-            return
-        self.current_path = "/".join(x for x in (self.current_path, entry[0]) if x)
-        self.refresh()
-
-    def go_up(self):
-        if self.current_path:
-            self.current_path = self.current_path.rsplit("/", 1)[0] if "/" in self.current_path else ""
-            self.refresh()
-
+        s=self.tree.selection(); return self.tree.item(s[0],"values") if s else None
+    def open(self,_=None):
+        x=self.selected()
+        if x and x[1]=="Folder":self.path="/".join(v for v in (self.path,x[0]) if v); self.refresh()
+    def up(self):
+        if self.path:self.path=self.path.rsplit("/",1)[0] if "/" in self.path else ""; self.refresh()
     def download(self):
-        entry = self.selected()
-        if not entry or entry[1] == "Folder" or not self.connection:
-            return
-        remote = "/".join(x for x in (self.current_path, entry[0]) if x)
-        target = filedialog.asksaveasfilename(initialfile=entry[0])
-        if not target:
-            return
-        try:
-            self.connection.download(remote, target)
-            messagebox.showinfo("PhoneBridge", "Download complete.")
-        except Exception as exc:
-            messagebox.showerror("Download failed", str(exc))
-
+        x=self.selected()
+        if not x or x[1]=="Folder" or not self.connection:return
+        target=filedialog.asksaveasfilename(initialfile=x[0])
+        if target:
+            try:self.connection.download("/".join(v for v in (self.path,x[0]) if v),target); messagebox.showinfo("PhoneBridge","Download complete.")
+            except Exception as e:messagebox.showerror("Download failed",str(e))
     def upload(self):
-        if not self.connection:
-            return
-        source = filedialog.askopenfilename()
-        if not source:
-            return
-        remote = "/".join(x for x in (self.current_path, os.path.basename(source)) if x)
-        try:
-            self.connection.upload(source, remote)
-            self.refresh()
-        except Exception as exc:
-            messagebox.showerror("Upload failed", str(exc))
-
+        if not self.connection:return
+        src=filedialog.askopenfilename()
+        if not src:return
+        try:self.connection.upload(src,"/".join(v for v in (self.path,os.path.basename(src)) if v)); self.refresh()
+        except Exception as e:messagebox.showerror("Upload failed",str(e))
     @staticmethod
-    def human_size(size):
-        units = ["B", "KB", "MB", "GB", "TB"]
-        size = float(size)
-        for unit in units:
-            if size < 1024 or unit == units[-1]:
-                return f"{size:.0f} {unit}"
-            size /= 1024
+    def size(n):
+        n=float(n)
+        for u in ("B","KB","MB","GB","TB"):
+            if n<1024 or u=="TB":return f"{n:.0f} {u}"
+            n/=1024
 
-
-if __name__ == "__main__":
-    import tkinter.simpledialog
-    root = tk.Tk()
-    PhoneBridgeApp(root)
-    root.mainloop()
+if __name__=="__main__":
+    root=tk.Tk(); App(root); root.mainloop()
