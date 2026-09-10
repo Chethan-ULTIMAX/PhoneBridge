@@ -15,6 +15,7 @@ import android.net.Uri;
 import android.os.*;
 import android.provider.Settings;
 import android.util.Base64;
+import android.util.DisplayMetrics;
 import android.view.*;
 import android.widget.*;
 import androidx.appcompat.app.AppCompatActivity;
@@ -109,7 +110,7 @@ public class MainActivity extends AppCompatActivity {
             else if("terminal.exec".equals(op))terminal(r.optString("command",""));
             else if("screen.start".equals(op))requestScreen(this);
             else if("screen.stop".equals(op)){if(screenClient==this)stopScreen();writeJson(new JSONObject().put("ok",true));}
-            else if("input.tap".equals(op))writeJson(new JSONObject().put("ok",PhoneBridgeAccessibilityService.tap((float)r.optDouble("x"), (float)r.optDouble("y"))).put("accessibility",PhoneBridgeAccessibilityService.isEnabled()));
+            else if("input.tap".equals(op))writeJson(new JSONObject().put("ok",PhoneBridgeAccessibilityService.tap((float)r.optDouble("x"), (float)r.optDouble("y")).put("accessibility",PhoneBridgeAccessibilityService.isEnabled()));
             else if("input.swipe".equals(op))writeJson(new JSONObject().put("ok",PhoneBridgeAccessibilityService.swipe((float)r.optDouble("x1"),(float)r.optDouble("y1"),(float)r.optDouble("x2"),(float)r.optDouble("y2"),(long)r.optDouble("duration",300))).put("accessibility",PhoneBridgeAccessibilityService.isEnabled()));
             else if("input.back".equals(op))writeJson(new JSONObject().put("ok",PhoneBridgeAccessibilityService.back()));
             else if("input.home".equals(op))writeJson(new JSONObject().put("ok",PhoneBridgeAccessibilityService.home()));
@@ -130,7 +131,7 @@ public class MainActivity extends AppCompatActivity {
         void deviceInfo()throws Exception{Runtime rt=Runtime.getRuntime();writeJson(new JSONObject().put("ok",true).put("model",Build.MODEL).put("manufacturer",Build.MANUFACTURER).put("android",Build.VERSION.RELEASE).put("sdk",Build.VERSION.SDK_INT).put("memory_available",rt.maxMemory()));}
         void apps()throws Exception{PackageManager pm=getPackageManager();JSONArray a=new JSONArray();for(ApplicationInfo ai:pm.getInstalledApplications(PackageManager.GET_META_DATA)){if(pm.getLaunchIntentForPackage(ai.packageName)!=null)a.put(new JSONObject().put("name",pm.getApplicationLabel(ai).toString()).put("package",ai.packageName));}writeJson(new JSONObject().put("ok",true).put("apps",a));}
         void launch(String pkg)throws Exception{if(pkg.isEmpty()){writeJson(new JSONObject().put("ok",false).put("error","Missing package"));return;}Intent i=getPackageManager().getLaunchIntentForPackage(pkg);if(i==null){writeJson(new JSONObject().put("ok",false).put("error","App cannot be launched"));return;}i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);startActivity(i);writeJson(new JSONObject().put("ok",true));}
-        void terminal(String command)throws Exception{String c=command.trim();if(!(c.equals("pwd")||c.equals("date")||c.equals("whoami")||c.equals("uname")||c.equals("ls")||c.equals("id"))){writeJson(new JSONObject().put("ok",false).put("error","Restricted terminal: allowed commands are pwd, ls, date, whoami, uname, id"));return;}try{Process p=Runtime.getRuntime().exec(new String[]{"/system/bin/sh","-c",c});BufferedReader br=new BufferedReader(new InputStreamReader(p.getInputStream()));StringBuilder outText=new StringBuilder();String line;while((line=br.readLine())!=null){if(outText.length()>20000)break;outText.append(line).append('\n');}int exit=p.waitFor();writeJson(new JSONObject().put("ok",exit==0).put("exit",exit).put("output",outText.toString()));}catch(Exception e){writeJson(new JSONObject().put("ok",false).put("error",e.getMessage()));}}
+        void terminal(String command)throws Exception{String c=command.trim();if(!(c.equals("pwd")||c.equals("date")||c.equals("whoami")||c.equals("uname")||c.equals("ls")||c.equals("id"))){writeJson(new JSONObject().put("ok",false).put("error","Restricted terminal: allowed commands are pwd, ls, date, whoami, uname, id"));return;}try{java.lang.Process p=Runtime.getRuntime().exec(new String[]{"/system/bin/sh","-c",c});BufferedReader br=new BufferedReader(new InputStreamReader(p.getInputStream()));StringBuilder outText=new StringBuilder();String line;while((line=br.readLine())!=null){if(outText.length()>20000)break;outText.append(line).append('\n');}int exit=p.waitFor();writeJson(new JSONObject().put("ok",exit==0).put("exit",exit).put("output",outText.toString()));}catch(Exception e){writeJson(new JSONObject().put("ok",false).put("error",e.getMessage()));}}
         JSONObject readJson()throws Exception{int n=in.readInt();if(n<0||n>4*1024*1024)throw new IOException("Invalid frame");byte[] b=new byte[n];in.readFully(b);return new JSONObject(new String(b,StandardCharsets.UTF_8));}
         void writeJson(JSONObject o)throws Exception{byte[] b=o.toString().getBytes(StandardCharsets.UTF_8);if(b.length>4*1024*1024)throw new IOException("Frame too large");synchronized(writeLock){out.writeInt(b.length);out.write(b);out.flush();}}
         void close(){try{socket.close();}catch(Exception ignored){}}
