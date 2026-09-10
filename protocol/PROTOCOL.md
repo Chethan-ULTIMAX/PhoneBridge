@@ -4,36 +4,52 @@ PhoneBridge uses two local-network phases.
 
 ## 1. Discovery
 
-Android sends a small UDP announcement to port `38741` at a short interval while the companion app is open.
+Android sends a small UDP announcement to port `38741` while the companion app is open.
 
 Announcement format:
 
 ```text
-PHONEBRIDGE/1 DISCOVER <device-id> <device-name> <tcp-port> <pairing-required>
+PHONEBRIDGE/1 DISCOVER <device-id> <device-name> <tcp-port>
 ```
 
-The announcement contains no secret, token, file data, or personal information.
+The announcement contains no pairing code, file data, or credentials.
 
 ## 2. Session
 
-The desktop connects to the announced TCP port and performs a pairing handshake. A new client receives a six-digit code displayed on the phone. After approval, both sides derive an authenticated session key from the pairing material.
+The desktop connects to the announced TCP port and performs a pairing handshake. A six-digit code displayed on the phone must be supplied by the desktop client.
 
-Application messages are UTF-8 JSON frames preceded by a four-byte big-endian length. Binary files use the same framing layer with a message header followed by streamed bytes.
+**Current security status:** the current transport is local-network TCP with pairing-code authorization, but it is not encrypted. This is a development build and should not be treated as production-secure. Transport encryption and stronger device authentication are planned before production use.
 
-## File API
+Application messages are UTF-8 JSON frames preceded by a four-byte big-endian length. Large binary transfers use the same framing layer with a JSON header followed by streamed bytes. Screen frames are JSON messages containing a compressed image payload.
 
-The first desktop client supports these logical operations:
+## Operations
+
+Current logical operations include:
 
 - `device.info`
 - `storage.list`
+- `storage.stats`
 - `file.download`
 - `file.upload`
-- `file.delete`
-- `file.mkdir`
-- `file.rename`
+- `storage.delete`
+- `storage.mkdir`
+- `storage.rename`
+- `apps.list`
+- `app.launch`
+- `terminal.exec` (restricted read-only command set)
+- `screen.start`
+- `screen.stop`
+- `input.tap`
+- `input.swipe`
+- `input.back`
+- `input.home`
+- `input.recents`
+- `input.text`
 
-All paths are interpreted relative to Android's exposed shared-storage root. The Android side rejects traversal outside its allowed root.
+Screen capture uses Android's MediaProjection permission. Input control uses Android Accessibility and requires explicit user enablement in system settings. PhoneBridge does not bypass those Android security boundaries.
+
+All storage paths are interpreted relative to the Android storage tree selected by the user. The Android side rejects traversal outside that allowed root.
 
 ## Compatibility
 
-The protocol is versioned so future desktop clients can negotiate capabilities instead of assuming that every phone supports every feature.
+The protocol is versioned so future desktop clients can negotiate capabilities instead of assuming that every phone supports every operation.
