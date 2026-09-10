@@ -12,6 +12,7 @@ import android.media.ImageReader;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -188,7 +189,7 @@ public class MainActivity extends AppCompatActivity {
             else if("terminal.exec".equals(op))terminal(r.optString("command",""));
             else if("screen.start".equals(op))requestScreen(this);
             else if("screen.stop".equals(op)){if(screenClient==this)stopScreen();writeJson(new JSONObject().put("ok",true));}
-            else if("input.tap".equals(op))writeJson(new JSONObject().put("ok",PhoneBridgeAccessibilityService.tap((float)r.optDouble("x"),(float)r.optDouble("y"))).put("accessibility",PhoneBridgeAccessibilityService.isEnabled()));
+            else if("input.tap".equals(op))writeJson(new JSONObject().put("ok",PhoneBridgeAccessibilityService.tap((float)r.optDouble("x"),(float)r.optDouble("y")).put("accessibility",PhoneBridgeAccessibilityService.isEnabled()));
             else if("input.swipe".equals(op))writeJson(new JSONObject().put("ok",PhoneBridgeAccessibilityService.swipe((float)r.optDouble("x1"),(float)r.optDouble("y1"),(float)r.optDouble("x2"),(float)r.optDouble("y2"),(long)r.optDouble("duration",300))).put("accessibility",PhoneBridgeAccessibilityService.isEnabled()));
             else if("input.back".equals(op))writeJson(new JSONObject().put("ok",PhoneBridgeAccessibilityService.back()));
             else if("input.home".equals(op))writeJson(new JSONObject().put("ok",PhoneBridgeAccessibilityService.home()));
